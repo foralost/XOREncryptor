@@ -11,12 +11,12 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 // Win32API name style
 
 // GUI Related consts
-consteval int WINDOW_HEIGHT = 250;
-consteval int WINDOW_WIDTH = 700;
-consteval int EDIT_WIDTH = 500;
-consteval int GAP_HEIGHT = 25;
-consteval int GAP_EDIT_BUTTON = 10;
-consteval int BUTTON_WIDTH = 100;
+constexpr int WINDOW_HEIGHT = 250;
+constexpr int WINDOW_WIDTH = 700;
+constexpr int EDIT_WIDTH = 500;
+constexpr int GAP_HEIGHT = 25;
+constexpr int GAP_EDIT_BUTTON = 10;
+constexpr int BUTTON_WIDTH = 100;
 // Paths related consts
 constexpr int MAX_PATH_LEN = 256;
 struct EncryptionExtra {
@@ -28,7 +28,6 @@ struct EncryptionExtra {
 	HANDLE dstFileHandle{ INVALID_HANDLE_VALUE };
 	HANDLE keyFileHandle{ INVALID_HANDLE_VALUE };
 };
-
 
 struct EncryptionWindowThread {
 	EncryptionExtra handles;
@@ -42,6 +41,7 @@ struct EncryptionWindowThread {
 
 struct EncryptionWindowState {
 	EncryptionWindowThread threadEncryptionData;
+	HWND encryptionWindowHandle;;
 	BOOL stillXORing;
 	HANDLE threadHandle;
 };
@@ -50,6 +50,7 @@ struct EncryptionWindowState {
 constexpr int ID_MENU_SRC = 100;
 constexpr int ID_MENU_DST = 101;
 constexpr int ID_MENU_KEY = 102;
+constinit HFONT hDlgFont{};
 
 class FILEPROVIDER {
 private:
@@ -61,15 +62,21 @@ private:
 		const HINSTANCE appInstance = (HINSTANCE)GetWindowLongPtr(parentWindow, GWLP_HINSTANCE);
 		const auto LABEL_WIDTH = label.size() * 25;
 
-		CreateWindow(L"STATIC", label.c_str(), WS_VISIBLE | WS_CHILD,
+		const auto lblDescription = CreateWindow(L"STATIC", label.c_str(), WS_VISIBLE | WS_CHILD,
 			startLocation.x, startLocation.y, LABEL_WIDTH, GAP_HEIGHT, parentWindow, NULL, appInstance, NULL);
 
-		CreateWindow(L"BUTTON", L"Search", WS_VISIBLE | WS_CHILD,
+		const auto btnSearch = CreateWindow(L"BUTTON", L"Search", WS_VISIBLE | WS_CHILD,
 			startLocation.x + EDIT_WIDTH + GAP_EDIT_BUTTON, startLocation.y + GAP_HEIGHT, BUTTON_WIDTH, GAP_HEIGHT, parentWindow, buttonAction, appInstance, NULL);
+		
+		const auto editPath = CreateWindow(L"EDIT", NULL, WS_VISIBLE | WS_CHILD,
+			startLocation.x, startLocation.y + GAP_HEIGHT, EDIT_WIDTH, GAP_HEIGHT, parentWindow, NULL, appInstance, NULL);
+		
+		SendMessage(lblDescription, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
+		SendMessage(btnSearch, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
+		SendMessage(editPath, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
 
 		// No error catching code because yes
-		dest.emplace(buttonAction, CreateWindow(L"EDIT", NULL, WS_VISIBLE | WS_CHILD,
-			startLocation.x, startLocation.y + GAP_HEIGHT, EDIT_WIDTH, GAP_HEIGHT, parentWindow, NULL, appInstance, NULL));
+		dest.emplace(buttonAction, editPath);
 	}
 
 public:
@@ -159,19 +166,27 @@ std::map<HMENU, HWND> FILEPROVIDER::buttonSearchFile = {};
 LRESULT CALLBACK mainWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK encryptWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM lParam);
 
+const auto userMainScreenWidth = GetSystemMetrics(SM_CXSCREEN);
+const auto userMainScreenHeight = GetSystemMetrics(SM_CYSCREEN);
+
 int WINAPI WinMain(
 	_In_ HINSTANCE hInstance,
 	_In_opt_ HINSTANCE hPrevInstance,
 	_In_ LPSTR lpCmdLine,
 	_In_ int nShowCmd
 ) {
-
 	if (auto CoStatus = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE); FAILED(CoStatus)) {
 		wchar_t buff[128];
 		wsprintfW(buff, L"Failed to initialize Co library. Returned status code: 0x%X", CoStatus);
 		MessageBoxW(0, buff, L"Error", MB_ICONERROR | MB_ICONERROR);
 		return CoStatus;
 	}
+
+	NONCLIENTMETRICS ncm;
+	ncm.cbSize = sizeof(NONCLIENTMETRICS);
+
+	SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, sizeof(NONCLIENTMETRICS));
+	hDlgFont = CreateFontIndirect(&(ncm.lfMessageFont));
 
 	WNDCLASS wc{};
 	wc.lpfnWndProc = mainWindowProcedure;
@@ -187,8 +202,8 @@ int WINAPI WinMain(
 		L"Main Window",
 		L"Main Window",
 		WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-		CW_USEDEFAULT,
-		CW_USEDEFAULT,
+		(userMainScreenWidth - WINDOW_WIDTH) / 2 ,
+		(userMainScreenHeight - WINDOW_HEIGHT) / 2,
 		WINDOW_WIDTH,
 		WINDOW_HEIGHT,
 		NULL, NULL,
@@ -222,7 +237,7 @@ BOOL openFiles(HWND parent, EncryptionExtra& data) {
 	};
 
 	auto tryToWrite = [parent](HANDLE& dst, const wchar_t* fPath) -> bool {
-		dst = CreateFile(fPath, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		dst = CreateFile(fPath, GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 		if (dst == INVALID_HANDLE_VALUE)
 		{
 			wchar_t msg[256];
@@ -254,18 +269,21 @@ BOOL openFiles(HWND parent, EncryptionExtra& data) {
 
 	return TRUE;
 }
+constexpr auto ENCRYPTION_BOX_WIDTH = 300;
+constexpr auto ENCRYPTION_BOX_HEIGHT = 175;
 
 LRESULT CALLBACK mainWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
-	LOGFONT lf;
-	WORD wmID, wmEvent;
+	LOGFONT lf{};
+	WORD wmID{}, wmEvent{};
+	LPVOID userPtr{};
 
 	switch (Msg) {
 	case WM_ENABLE:
 		if (wParam != TRUE)
 			break;
 		
-		auto userPtr = (LPVOID)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+		userPtr = (LPVOID)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 		if (!userPtr)
 			break;
 
@@ -286,7 +304,8 @@ LRESULT CALLBACK mainWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM 
 			if (!openFiles(hwnd, ext))
 				break;
 
-			EncryptionWindowState* encExt = (EncryptionWindowState*)VirtualAlloc(NULL, sizeof(EncryptionWindowState), MEM_COMMIT, NULL); // watch out for memory leak
+			EncryptionWindowState* encExt = (EncryptionWindowState*)VirtualAlloc(NULL, sizeof(EncryptionWindowState), MEM_COMMIT, PAGE_READWRITE); // watch out for memory leak
+			encExt->stillXORing = true;
 			encExt->threadEncryptionData.handles = ext;
 			encExt->threadEncryptionData.currentByte = (HWND)INVALID_HANDLE_VALUE;
 			encExt->threadEncryptionData.maxBytes = (HWND)INVALID_HANDLE_VALUE;
@@ -301,9 +320,11 @@ LRESULT CALLBACK mainWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM 
 			RegisterClass(&progressWindowClass);
 			EnableWindow(hwnd, FALSE);
 
-			auto secondWindow = CreateWindowEx(NULL, L"Encryption Window", L"Encryption Window", WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-				300, 100, hwnd, NULL, progressWindowClass.hInstance, &encExt);
-
+			auto secondWindow = CreateWindowEx(NULL, L"Encryption Window", L"Encryption Window", 
+				WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME | WS_VISIBLE, 
+				(userMainScreenWidth - ENCRYPTION_BOX_WIDTH) / 2, (userMainScreenHeight - ENCRYPTION_BOX_HEIGHT) / 2,
+				ENCRYPTION_BOX_WIDTH, ENCRYPTION_BOX_HEIGHT, hwnd, NULL, progressWindowClass.hInstance, encExt);
+			
 			break;
 		}
 		break;
@@ -316,10 +337,10 @@ LRESULT CALLBACK mainWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM 
 		FILEPROVIDER::createSearchField(L"Source file:", (HMENU)ID_MENU_SRC, POINT{ 10,10 }, hwnd);
 		FILEPROVIDER::createSaveField(L"Destination file:", (HMENU)ID_MENU_DST, POINT{ 10,60 }, hwnd);
 		FILEPROVIDER::createSearchField(L"File with the key:", (HMENU)ID_MENU_KEY, POINT{ 10, 110 }, hwnd);
-
-		CreateWindow(L"BUTTON", L"Encrypt", WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
+		const auto btnEncrypt = CreateWindow(L"BUTTON", L"Encrypt", WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
 			10, GAP_HEIGHT * 7, BUTTON_WIDTH, GAP_HEIGHT, hwnd, (HMENU)103, (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), NULL);
 
+		SendMessage(btnEncrypt, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
 		SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)NULL);
 		break;
 	}
@@ -329,60 +350,98 @@ LRESULT CALLBACK mainWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM 
 constexpr auto PB_WIDTH = 200;
 constexpr auto PB_HEIGHT = 200;
 
-consteval int ENC_WINDOW_HEIGHT = 200;
-consteval int ENC_WINDOW_WIDTH = 400;
+constexpr int ENC_WINDOW_HEIGHT = 200;
+constexpr int ENC_WINDOW_WIDTH = 400;
 constexpr int xoringBufferLength = 512;
-consteval int ENC_WINDOW_MAX_DIGITS = 10;
+constexpr int ENC_WINDOW_MAX_DIGITS = 10;
 
 DWORD startXORing(EncryptionWindowState* appState) {
 
 	auto encryptionData = &appState->threadEncryptionData;
 
-	auto acquireFileSize = [](const HANDLE& fHandle) -> size_t {
+	auto acquireFileSize = [](const HANDLE& fHandle) -> DWORD {
 		BY_HANDLE_FILE_INFORMATION fileData{};
 		GetFileInformationByHandle(fHandle, &fileData);
-		return fileData.nFileSizeLow | ((size_t)fileData.nFileSizeHigh) << 32;
-	};
+		return fileData.nFileSizeLow;
+		};
 
-	char xorKey{};
+	char xorKey[xoringBufferLength]{};
+	ReadFile(encryptionData->handles.keyFileHandle, xorKey, xoringBufferLength, NULL, NULL);
+
 	char buff[xoringBufferLength]{};
 
+	uint64_t dstFileSize = 0;
 	auto srcFileSize = acquireFileSize(encryptionData->handles.srcFileHandle);
 	auto keySize = acquireFileSize(encryptionData->handles.keyFileHandle);
+
+	SendMessage(encryptionData->progressBar, PBM_SETRANGE, 0, srcFileSize);
 
 	wchar_t currentByteLabel[16]{};
 	wchar_t maxBytesLabel[16]{};
 	wchar_t keySizeLabel[16]{};
+	
+	DWORD bytesProcessed{};
+	
+	wsprintf(maxBytesLabel, L"%u", srcFileSize);
+	wsprintf(keySizeLabel, L"%u", keySize);
 
-	wsprintf(currentByteLabel, L"%u", (size_t)0);
-	wsprintf(maxBytesLabel, L"%zu", srcFileSize);
-	wsprintf(keySizeLabel, L"%zu", keySize);
+	SetWindowText(encryptionData->currentByte, currentByteLabel);
+	SetWindowText(encryptionData->keySize, keySizeLabel);
+	SetWindowText(encryptionData->maxBytes, maxBytesLabel);
+	SendMessage(encryptionData->progressBar, PBM_SETRANGE, 0, srcFileSize);
 
+	while (appState->stillXORing) {
+		DWORD currPackageCount{};
+		ReadFile(encryptionData->handles.srcFileHandle, buff, xoringBufferLength, &currPackageCount, NULL);
+		
+		bytesProcessed += currPackageCount;
+		for(uint16_t i = 0; i < currPackageCount; i++)
+			buff[i] ^= xorKey[i % keySize];
+		
+		WriteFile(encryptionData->handles.dstFileHandle, buff, currPackageCount, &currPackageCount, NULL);
 
-	SetWindowText(encryptionData->currentByte, );
-	while(appState->stillXORing){
-		ReadFile(srcFile, buffer, xoringBufferLength, NULL, NULL);
+		wsprintf(currentByteLabel, L"%u", bytesProcessed);
+		SetWindowText(encryptionData->currentByte, currentByteLabel);
+
+		SendMessage(encryptionData->progressBar, PBM_SETPOS, bytesProcessed, 0);
+		if (bytesProcessed == srcFileSize)
+			appState->stillXORing = false;
 	}
 
-	return ERROR_SUCCESS;
+	CloseHandle(encryptionData->handles.srcFileHandle);
+	CloseHandle(encryptionData->handles.dstFileHandle);
+	CloseHandle(encryptionData->handles.keyFileHandle);
+
+	if (bytesProcessed == srcFileSize) {
+		MessageBox(appState->encryptionWindowHandle, L"Succesfully encrypted data.", L"Encryption", MB_OK | MB_ICONINFORMATION);
+		return ERROR_SUCCESS;
+	}
+	else {
+		MessageBox(appState->encryptionWindowHandle, L"XORing was cancelled.", L"Encryption", MB_OK | MB_ICONWARNING);
+		return ERROR_CANCELLED;
+	}
 }
 
 LRESULT CALLBACK encryptWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
 	HWND currentBytesLbl{};
 	HWND maxBytesLbl{};
 	HWND keyLbl{};
+	EncryptionWindowState* extraInfo{};
 
 	switch (Msg) {
-	case WM_DESTROY:
-		auto extraInfo = (EncryptionWindowState*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-		extraInfo->stillXORing = FALSE;
-		if (!WaitForSingleObject(extraInfo->threadHandle, 5000))
+	case WM_CLOSE:
+		extraInfo = (EncryptionWindowState*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+		extraInfo->stillXORing = false;
+		if (!WaitForSingleObject(extraInfo->threadHandle, 5000) == WAIT_TIMEOUT) {
+			MessageBox(hwnd, L"Could not finish the encrypting thread. Closing the application.", L"Error", MB_ICONERROR);
 			ExitProcess(-1); // Exit with a bang because we do not know if thread is still holding HANDLES, consider it UB
+		}
 
 		EnableWindow((HWND)GetWindowLongPtr(hwnd, GWLP_HWNDPARENT), TRUE);
 		SetActiveWindow((HWND)GetWindowLongPtr(hwnd, GWLP_HWNDPARENT));
 		DestroyWindow(hwnd);
 		break;
+	
 	case WM_CREATE:
 		const std::wstring currentBytesDescr(L"Bytes XORed: ");
 		const std::wstring maxBytesDescr(L"Bytes to XOR: ");
@@ -395,19 +454,29 @@ LRESULT CALLBACK encryptWindowProcedure(HWND hwnd, UINT Msg, WPARAM wParam, LPAR
 			return -1;
 		}
 
-		auto extraInfo = (EncryptionWindowState*)(((LPCREATESTRUCT)lParam)->lpCreateParams);
-		extraInfo->threadEncryptionData.progressBar = CreateWindow(PROGRESS_CLASS, NULL, WS_VISIBLE | WS_CHILD, 10, 50, 260, 25, hwnd, NULL, currInstance, NULL);
+		extraInfo = (EncryptionWindowState*)(((LPCREATESTRUCT)lParam)->lpCreateParams);
 
-		currentBytesLbl = CreateWindow(L"STATIC", currentBytesDescr.c_str(), WS_VISIBLE | WS_CHILD, 10, 10, currentBytesDescr.size() * 10, 10, hwnd, NULL, currInstance, NULL);
-		extraInfo->threadEncryptionData.currentByte = CreateWindow(L"STATIC", L"", WS_VISIBLE | WS_CHILD, 10 + currentBytesDescr.size() * 10 + 10, 10, ENC_WINDOW_MAX_DIGITS * 10, 10, hwnd, NULL, currInstance, NULL);
+		extraInfo->threadEncryptionData.progressBar = CreateWindow(PROGRESS_CLASS, NULL, WS_VISIBLE | WS_CHILD, 10, 80, 260, 25, hwnd, NULL, currInstance, NULL);
 
-		maxBytesLbl = CreateWindow(L"STATIC", maxBytesDescr.c_str(), WS_VISIBLE | WS_CHILD, 10, 20, maxBytesDescr.size() * 10, 10, hwnd, NULL, currInstance, NULL);
-		extraInfo->threadEncryptionData.maxBytes = CreateWindow(L"STATIC", L"", WS_VISIBLE | WS_CHILD, 10 + maxBytesDescr.size() * 10 + 10, 20, ENC_WINDOW_MAX_DIGITS * 10, 10, hwnd, NULL, currInstance, NULL);
+		currentBytesLbl = CreateWindow(L"STATIC", currentBytesDescr.c_str(), WS_VISIBLE | WS_CHILD, 10, 10, currentBytesDescr.size() * 10, 20, hwnd, NULL, currInstance, NULL);
+		extraInfo->threadEncryptionData.currentByte = CreateWindow(L"STATIC", L"", WS_VISIBLE | WS_CHILD, 10 + currentBytesDescr.size() * 10 + 10, 10, ENC_WINDOW_MAX_DIGITS * 10, 20, hwnd, NULL, currInstance, NULL);
 
-		keyLbl = CreateWindow(L"STATIC", keyBytesDescr.c_str(), WS_VISIBLE | WS_CHILD, 10, 30, keyBytesDescr.size() * 10, 10, hwnd, NULL, currInstance, NULL);
-		extraInfo->threadEncryptionData.keySize = CreateWindow(L"STATIC", L"", WS_VISIBLE | WS_CHILD, 10 + keyBytesDescr.size() * 10 + 10 , 30, ENC_WINDOW_MAX_DIGITS * 10, 10, hwnd, NULL, currInstance, NULL);
+		maxBytesLbl = CreateWindow(L"STATIC", maxBytesDescr.c_str(), WS_VISIBLE | WS_CHILD, 10, 30, maxBytesDescr.size() * 10, 20, hwnd, NULL, currInstance, NULL);
+		extraInfo->threadEncryptionData.maxBytes = CreateWindow(L"STATIC", L"", WS_VISIBLE | WS_CHILD, 10 + maxBytesDescr.size() * 10 + 10, 30, ENC_WINDOW_MAX_DIGITS * 10, 20, hwnd, NULL, currInstance, NULL);
 
-		extraInfo->threadHandle = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)&startXORing, &extraInfo, NULL, NULL);
+		keyLbl = CreateWindow(L"STATIC", keyBytesDescr.c_str(), WS_VISIBLE | WS_CHILD, 10, 50, keyBytesDescr.size() * 10, 20, hwnd, NULL, currInstance, NULL);
+		extraInfo->threadEncryptionData.keySize = CreateWindow(L"STATIC", L"", WS_VISIBLE | WS_CHILD, 10 + keyBytesDescr.size() * 10 + 10 , 50, ENC_WINDOW_MAX_DIGITS * 10, 20, hwnd, NULL, currInstance, NULL);
+
+		extraInfo->threadHandle = CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)&startXORing, extraInfo, NULL, NULL);
+		extraInfo->encryptionWindowHandle = hwnd;
+		
+		SendMessage(keyLbl, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
+		SendMessage(maxBytesLbl, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
+		SendMessage(currentBytesLbl, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
+
+		SendMessage(extraInfo->threadEncryptionData.currentByte, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
+		SendMessage(extraInfo->threadEncryptionData.maxBytes, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
+		SendMessage(extraInfo->threadEncryptionData.keySize, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(FALSE, 0));
 
 		SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)extraInfo);
 		break;
